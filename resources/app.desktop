@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Dream Collections
+Comment=MuDream Collection finder
+Type=Application
+Icon=dev.heppen.dream.collections
+Exec=dream-collections %F
+Terminal=false
+StartupNotify=true
+Categories=COSMIC
+Keywords=COSMIC
+MimeType=
