@@ -9,7 +9,7 @@ use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::{Alignment, Length, Subscription};
 use cosmic::prelude::*;
-use cosmic::widget::{self, about::About, icon, menu, nav_bar};
+use cosmic::widget::{self, about::About, menu, nav_bar};
 use gql_client::Client;
 use ron::ser::{PrettyConfig, to_string_pretty};
 use serde::{Deserialize, Serialize};
@@ -19,8 +19,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
-const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
-
 const ENDPOINT: &str = "https://mudream.online/api/graphql";
 
 /// Messages emitted by the application and its widgets.
@@ -37,7 +35,7 @@ pub enum Message {
     SearchMarket(Arc<Mutex<Item>>),
     ClearOffers,
 
-    MarketSearchResult(Data),
+    MarketSearchResult((String, Data)),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,7 +159,7 @@ pub struct AppModel {
     collections: PlayerCollection,
     current_set_index: usize,
 
-    offers: Vec<gql::Item>,
+    offers: (String, Vec<gql::Item>),
 }
 
 /// Create a COSMIC application from the app model
@@ -197,43 +195,29 @@ impl cosmic::Application for AppModel {
         nav.insert()
             .text("Dark Wizard")
             .data::<Page>(Page::DarkWizard)
-            .icon(icon::from_name("applications-games-symbolic"))
             .activate();
 
         nav.insert()
             .text("Dark Knight")
-            .data::<Page>(Page::DarkKnight)
-            .icon(icon::from_name("applications-games-symbolic"));
+            .data::<Page>(Page::DarkKnight);
 
-        nav.insert()
-            .text("Elf")
-            .data::<Page>(Page::Elf)
-            .icon(icon::from_name("applications-games-symbolic"));
+        nav.insert().text("Elf").data::<Page>(Page::Elf);
 
-        nav.insert()
-            .text("Summoner")
-            .data::<Page>(Page::Summoner)
-            .icon(icon::from_name("applications-games-symbolic"));
+        nav.insert().text("Summoner").data::<Page>(Page::Summoner);
 
         nav.insert()
             .text("Magic Gladiator")
-            .data::<Page>(Page::MagicGladiator)
-            .icon(icon::from_name("applications-games-symbolic"));
+            .data::<Page>(Page::MagicGladiator);
 
-        nav.insert()
-            .text("Dark Lord")
-            .data::<Page>(Page::DarkLord)
-            .icon(icon::from_name("applications-games-symbolic"));
+        nav.insert().text("Dark Lord").data::<Page>(Page::DarkLord);
 
         nav.insert()
             .text("Rage Figher")
-            .data::<Page>(Page::RageFighter)
-            .icon(icon::from_name("applications-games-symbolic"));
+            .data::<Page>(Page::RageFighter);
 
         // Create the about widget
         let about = About::default()
             .name(fl!("app-title"))
-            .icon(widget::icon::from_svg_bytes(APP_ICON))
             .version(env!("CARGO_PKG_VERSION"))
             .links([(fl!("repository"), REPOSITORY)])
             .license(env!("CARGO_PKG_LICENSE"));
@@ -286,7 +270,7 @@ impl cosmic::Application for AppModel {
             collections,
             current_set_index: 0,
 
-            offers: vec![],
+            offers: (String::new(), vec![]),
         };
 
         // Create a startup command that sets the window title.
@@ -391,7 +375,7 @@ impl cosmic::Application for AppModel {
                     .collection
                     .iter()
                     .find_map(|class_set| {
-                        if let ClassSets::Elf(sets) = class_set {
+                        if let ClassSets::Summoner(sets) = class_set {
                             Some(sets)
                         } else {
                             None
@@ -457,7 +441,6 @@ impl cosmic::Application for AppModel {
             .height(Length::Fill)
             .width(Length::Fill)
             .align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
             .into()
     }
 
@@ -528,15 +511,18 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::ClearOffers => {
-                self.offers.clear();
+                self.offers.1.clear();
             }
             Message::SearchMarket(item) => {
                 let item_guard = item.lock().unwrap();
                 let query = item_guard.generate_market_query();
                 let vars = item_guard.generate_gql_vars();
 
-                println!("Generated Query: {}", query);
-                println!("With Vars: {:?}", vars);
+                let item_title = format!(
+                    "{} {}",
+                    item_guard.name.clone().unwrap_or_default(),
+                    item_guard.item_type.clone().unwrap_or_default()
+                );
 
                 return Task::future(async move {
                     let client = Client::new(ENDPOINT);
@@ -546,16 +532,20 @@ impl cosmic::Application for AppModel {
                         .await
                         .unwrap();
 
-                    cosmic::Action::App(Message::MarketSearchResult(result.expect("No data")))
+                    cosmic::Action::App(Message::MarketSearchResult((
+                        item_title,
+                        result.expect("No data"),
+                    )))
                 });
             }
 
-            Message::MarketSearchResult(data) => {
+            Message::MarketSearchResult((item, data)) => {
                 // Handle market search results here
                 println!("Received market search results");
 
                 for lot in data.lots.lots {
-                    self.offers.push(lot);
+                    self.offers.0 = item.clone();
+                    self.offers.1.push(lot);
                 }
             }
         }
@@ -566,7 +556,7 @@ impl cosmic::Application for AppModel {
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<cosmic::Action<Self::Message>> {
         // Activate the page in the model.
 
-        self.offers.clear();
+        self.offers.1.clear();
 
         self.nav.activate(id);
 
@@ -596,8 +586,11 @@ impl AppModel {
 
         let header = widget::row::with_capacity(2)
             .push(widget::text::title1(title.to_string()))
-            .push(widget::button::standard("ZAPISZ").on_press(Message::SaveCollections))
-            .push(widget::button::standard("WYCZYŚĆ OFERTY").on_press(Message::ClearOffers))
+            .push(
+                widget::button::standard("Zapisz kolekcje do bazy")
+                    .on_press(Message::SaveCollections),
+            )
+            .push(widget::button::standard("Wyczyść oferty").on_press(Message::ClearOffers))
             .align_y(Alignment::End)
             .spacing(space_s);
 
@@ -656,11 +649,19 @@ impl AppModel {
         })
         .spacing(space_s);
 
-        widget::column::with_capacity(2)
+        widget::column()
             .push(header)
-            .push(set_selector)
             .push(self.view_offers())
-            .push(set_parts)
+            .push_maybe(if self.offers.1.is_empty() {
+                set_selector.into()
+            } else {
+                None
+            })
+            .push_maybe(if self.offers.1.is_empty() {
+                set_parts.into()
+            } else {
+                None
+            })
             .spacing(space_s)
             .into()
     }
@@ -668,46 +669,47 @@ impl AppModel {
     pub fn view_offers(&self) -> Element<'_, Message> {
         let space_s = cosmic::theme::spacing().space_s;
 
-        let header = cosmic::widget::settings::section().title("Oferty z marketu");
-
         let list = cosmic::widget::scrollable({
             let mut col = cosmic::widget::column().spacing(space_s);
 
-            for item in self.offers.iter() {
+            for item in self.offers.1.iter() {
                 let title = item.gear_score.unwrap_or_default().to_string();
 
-                col = col.push(cosmic::widget::container({
-                    let mut section = cosmic::widget::settings::section()
-                        .title(format!("Gear score: {} ", title));
+                col = col.push(cosmic::widget::container(
+                    cosmic::widget::settings::section()
+                        .title(format!("Gear score: {} ", title))
+                        .add(widget::settings::item_row({
+                            let mut row = vec![];
 
-                    for price in item.prices.iter() {
-                        let currency = &price.currency;
-                        let value = price.value.unwrap_or_default();
+                            for price in item.prices.iter() {
+                                let currency = &price.currency;
+                                let value = price.value.unwrap_or_default();
 
-                        let currency_title = currency.title.as_deref().unwrap_or("Unknown");
+                                let currency_title = currency.title.as_deref().unwrap_or("Unknown");
 
-                        section = section.add(
-                            cosmic::widget::settings::item::builder(currency_title)
-                                .control(cosmic::widget::text::body(format!("{:.2}", value))),
-                        )
-                    }
+                                row.push(
+                                    widget::text::body(format!("{}: {:.2}", currency_title, value))
+                                        .into(),
+                                );
+                            }
 
-                    section
-                }))
+                            row
+                        })),
+                ))
             }
 
             widget::container(col)
                 .padding(10.0)
                 .align_x(Horizontal::Center)
-                .align_y(Vertical::Center)
         })
         .spacing(space_s);
 
         widget::column::with_capacity(2)
-            .push_maybe(if self.offers.is_empty() {
-                None
+            .push(if self.offers.1.is_empty() {
+                cosmic::widget::settings::section().title("Brak ofert. Szukaj dalej.")
             } else {
-                header.into()
+                cosmic::widget::settings::section()
+                    .title(format!("Oferty z marketu dla: {}", self.offers.0))
             })
             .push(list)
             .spacing(space_s)

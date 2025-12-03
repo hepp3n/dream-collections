@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::gql::Vars;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub enum ItemType {
+    #[default]
     Helm,
     Armor,
     Pants,

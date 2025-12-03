@@ -59,7 +59,7 @@ pub struct Item {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Prices {
-    pub value: Option<f64>,
+    pub value: Option<u32>,
     #[serde(rename = "Currency")]
     pub currency: Currency,
 }
