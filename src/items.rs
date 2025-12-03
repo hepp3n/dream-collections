@@ -222,6 +222,13 @@ pub struct SetItems {
     pub items: [Arc<Mutex<Item>>; 5],
 }
 
+impl From<String> for SetItems {
+    fn from(set_str: String) -> Self {
+        let set_name: AllSets = AllSets::from(set_str.clone());
+        SetItems::new(set_name)
+    }
+}
+
 impl Display for SetItems {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.set_string)
@@ -270,7 +277,7 @@ pub enum ClassSets {
     RageFighter(Vec<SetItems>),
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum AllSets {
     // Dark Wizard Sets
     Pad,

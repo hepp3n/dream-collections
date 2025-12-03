@@ -1,19 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::config::Config;
+use crate::gql;
 use crate::gql::{Data, Vars};
 use crate::items::{AllSets, ClassSets, Item, ItemHasOption, ItemOptionType, SetItems};
-use crate::{fl, gql};
-use cosmic::app::context_drawer;
-use cosmic::cosmic_config::{self, CosmicConfigEntry};
-use cosmic::iced::alignment::{Horizontal, Vertical};
-use cosmic::iced::{Alignment, Length, Subscription};
-use cosmic::prelude::*;
-use cosmic::widget::{self, about::About, menu, nav_bar};
 use gql_client::Client;
+use iced::alignment::Horizontal;
+use iced::widget::{Container, horizontal_rule, horizontal_space, row};
+use iced::{Element, Length, Pixels, Task, widget};
 use ron::ser::{PrettyConfig, to_string_pretty};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -24,30 +19,28 @@ const ENDPOINT: &str = "https://mudream.online/api/graphql";
 /// Messages emitted by the application and its widgets.
 #[derive(Debug, Clone)]
 pub enum Message {
-    LaunchUrl(String),
-    ToggleContextPage(ContextPage),
-    UpdateConfig(Config),
+    ChangePage(Page),
+    ChangeSet(String),
 
-    UpdateCurrentSet(usize),
     UpdateItem(Arc<Mutex<Item>>, ItemOptionType, ItemHasOption),
 
     SaveCollections,
     SearchMarket(Arc<Mutex<Item>>),
     ClearOffers,
 
-    MarketSearchResult((String, Data)),
+    MarketSearchResult((String, Option<Data>)),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerCollection {
-    pub collection: Vec<ClassSets>,
+    pub collection: Vec<Arc<Mutex<ClassSets>>>,
 }
 
 impl Default for PlayerCollection {
     fn default() -> Self {
         PlayerCollection {
             collection: vec![
-                ClassSets::DarkWizard(vec![
+                Arc::new(Mutex::new(ClassSets::DarkWizard(vec![
                     SetItems::new(AllSets::Pad),
                     SetItems::new(AllSets::Bone),
                     SetItems::new(AllSets::Sphinx),
@@ -55,8 +48,8 @@ impl Default for PlayerCollection {
                     SetItems::new(AllSets::GrandSoul),
                     SetItems::new(AllSets::DarkSoul),
                     SetItems::new(AllSets::VenomMist),
-                ]),
-                ClassSets::DarkKnight(vec![
+                ]))),
+                Arc::new(Mutex::new(ClassSets::DarkKnight(vec![
                     SetItems::new(AllSets::Leather),
                     SetItems::new(AllSets::Bronze),
                     SetItems::new(AllSets::Scale),
@@ -67,8 +60,8 @@ impl Default for PlayerCollection {
                     SetItems::new(AllSets::DarkPhoenix),
                     SetItems::new(AllSets::GreatDragon),
                     SetItems::new(AllSets::DragonKnight),
-                ]),
-                ClassSets::Elf(vec![
+                ]))),
+                Arc::new(Mutex::new(ClassSets::Elf(vec![
                     SetItems::new(AllSets::Vine),
                     SetItems::new(AllSets::Silk),
                     SetItems::new(AllSets::Wind),
@@ -76,16 +69,16 @@ impl Default for PlayerCollection {
                     SetItems::new(AllSets::Guardian),
                     SetItems::new(AllSets::HolySpirit),
                     SetItems::new(AllSets::RedSpirit),
-                ]),
-                ClassSets::Summoner(vec![
+                ]))),
+                Arc::new(Mutex::new(ClassSets::Summoner(vec![
                     SetItems::new(AllSets::ViolentWind),
                     SetItems::new(AllSets::RedWinged),
                     SetItems::new(AllSets::Ancient),
                     SetItems::new(AllSets::Demonic),
                     SetItems::new(AllSets::StormBlitz),
                     SetItems::new(AllSets::Succubus),
-                ]),
-                ClassSets::MagicGladiator(vec![
+                ]))),
+                Arc::new(Mutex::new(ClassSets::MagicGladiator(vec![
                     SetItems::new(AllSets::Pad),
                     SetItems::new(AllSets::Leather),
                     SetItems::new(AllSets::Bronze),
@@ -100,8 +93,8 @@ impl Default for PlayerCollection {
                     SetItems::new(AllSets::ThunderHawk),
                     SetItems::new(AllSets::Hurricane),
                     SetItems::new(AllSets::Volcano),
-                ]),
-                ClassSets::DarkLord(vec![
+                ]))),
+                Arc::new(Mutex::new(ClassSets::DarkLord(vec![
                     SetItems::new(AllSets::Leather),
                     SetItems::new(AllSets::Bronze),
                     SetItems::new(AllSets::Scale),
@@ -110,8 +103,8 @@ impl Default for PlayerCollection {
                     SetItems::new(AllSets::DarkSteel),
                     SetItems::new(AllSets::DarkMaster),
                     SetItems::new(AllSets::Sunlight),
-                ]),
-                ClassSets::RageFighter(vec![
+                ]))),
+                Arc::new(Mutex::new(ClassSets::RageFighter(vec![
                     SetItems::new(AllSets::Leather),
                     SetItems::new(AllSets::Scale),
                     SetItems::new(AllSets::Brass),
@@ -120,7 +113,7 @@ impl Default for PlayerCollection {
                     SetItems::new(AllSets::StormZahard),
                     SetItems::new(AllSets::PiercingGrove),
                     SetItems::new(AllSets::PhoenixSoul),
-                ]),
+                ]))),
             ],
         }
     }
@@ -139,89 +132,21 @@ impl PlayerCollection {
     }
 }
 
-/// The application model stores app-specific state used to describe its interface and
-/// drive its logic.
 pub struct AppModel {
-    /// Application state which is managed by the COSMIC runtime.
-    core: cosmic::Core,
-    /// Display a context drawer with the designated page if defined.
-    context_page: ContextPage,
-    /// The about page for this app.
-    about: About,
-    /// Contains items assigned to the nav bar panel.
-    nav: nav_bar::Model,
-    /// Key bindings for the application's menu bar.
-    key_binds: HashMap<menu::KeyBind, MenuAction>,
-    /// Configuration data that persists between application runs.
-    config: Config,
-    // collections
+    page: Page,
     config_dir: PathBuf,
     collections: PlayerCollection,
-    current_set_index: usize,
+    current_class: Arc<Mutex<ClassSets>>,
+    current_set: Option<SetItems>,
+
+    set_options: Vec<SetItems>,
+    set_selected: Option<String>,
 
     offers: (String, Vec<gql::Item>),
 }
 
-/// Create a COSMIC application from the app model
-impl cosmic::Application for AppModel {
-    /// The async executor that will be used to run your application's commands.
-    type Executor = cosmic::executor::Default;
-
-    /// Data that your application receives to its init method.
-    type Flags = ();
-
-    /// Messages which the application and its widgets will emit.
-    type Message = Message;
-
-    /// Unique identifier in RDNN (reverse domain name notation) format.
-    const APP_ID: &'static str = "dev.heppen.dream.collections";
-
-    fn core(&self) -> &cosmic::Core {
-        &self.core
-    }
-
-    fn core_mut(&mut self) -> &mut cosmic::Core {
-        &mut self.core
-    }
-
-    /// Initializes the application with any given flags and startup commands.
-    fn init(
-        core: cosmic::Core,
-        _flags: Self::Flags,
-    ) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        // Create a nav bar with three page items.
-        let mut nav = nav_bar::Model::default();
-
-        nav.insert()
-            .text("Dark Wizard")
-            .data::<Page>(Page::DarkWizard)
-            .activate();
-
-        nav.insert()
-            .text("Dark Knight")
-            .data::<Page>(Page::DarkKnight);
-
-        nav.insert().text("Elf").data::<Page>(Page::Elf);
-
-        nav.insert().text("Summoner").data::<Page>(Page::Summoner);
-
-        nav.insert()
-            .text("Magic Gladiator")
-            .data::<Page>(Page::MagicGladiator);
-
-        nav.insert().text("Dark Lord").data::<Page>(Page::DarkLord);
-
-        nav.insert()
-            .text("Rage Figher")
-            .data::<Page>(Page::RageFighter);
-
-        // Create the about widget
-        let about = About::default()
-            .name(fl!("app-title"))
-            .version(env!("CARGO_PKG_VERSION"))
-            .links([(fl!("repository"), REPOSITORY)])
-            .license(env!("CARGO_PKG_LICENSE"));
-
+impl Default for AppModel {
+    fn default() -> Self {
         let config_dir = dirs::config_dir().unwrap_or_default();
 
         let app_dir = config_dir.join("dream_collections");
@@ -246,259 +171,99 @@ impl cosmic::Application for AppModel {
             }
         };
 
-        // Construct the app model with the runtime's core.
-        let mut app = AppModel {
-            core,
-            context_page: ContextPage::default(),
-            about,
-            nav,
-            key_binds: HashMap::new(),
-            // Optional configuration file for an application.
-            config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-                .map(|context| match Config::get_entry(&context) {
-                    Ok(config) => config,
-                    Err((_errors, config)) => {
-                        // for why in errors {
-                        //     tracing::error!(%why, "error loading app config");
-                        // }
+        let current_class = collections
+            .collection
+            .iter()
+            .find(|c| matches!(*c.lock().unwrap(), ClassSets::DarkWizard(_)))
+            .cloned()
+            .unwrap_or_else(|| Arc::new(Mutex::new(ClassSets::DarkWizard(vec![]))));
 
-                        config
-                    }
-                })
-                .unwrap_or_default(),
+        let set_options = match &*current_class.lock().unwrap() {
+            ClassSets::DarkWizard(sets) => sets.clone(),
+            ClassSets::DarkKnight(sets) => sets.clone(),
+            ClassSets::Elf(sets) => sets.clone(),
+            ClassSets::Summoner(sets) => sets.clone(),
+            ClassSets::MagicGladiator(sets) => sets.clone(),
+            ClassSets::DarkLord(sets) => sets.clone(),
+            ClassSets::RageFighter(sets) => sets.clone(),
+        };
+
+        // Construct the app model with the runtime's core.
+        AppModel {
+            page: Page::DarkWizard,
             config_dir: file_path,
             collections,
-            current_set_index: 0,
+            current_class,
+            current_set: None,
+
+            set_options,
+            set_selected: None,
 
             offers: (String::new(), vec![]),
-        };
-
-        // Create a startup command that sets the window title.
-        let command = app.update_title();
-
-        (app, command)
-    }
-
-    /// Elements to pack at the start of the header bar.
-    fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
-        let menu_bar = menu::bar(vec![menu::Tree::with_children(
-            menu::root(fl!("view")).apply(Element::from),
-            menu::items(
-                &self.key_binds,
-                vec![menu::Item::Button(fl!("about"), None, MenuAction::About)],
-            ),
-        )]);
-
-        vec![menu_bar.into()]
-    }
-
-    /// Enables the COSMIC application to create a nav bar with this model.
-    fn nav_model(&self) -> Option<&nav_bar::Model> {
-        Some(&self.nav)
-    }
-
-    /// Display a context drawer if the context page is requested.
-    fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Self::Message>> {
-        if !self.core.window.show_context {
-            return None;
         }
+    }
+}
 
-        Some(match self.context_page {
-            ContextPage::About => context_drawer::about(
-                &self.about,
-                |url| Message::LaunchUrl(url.to_string()),
-                Message::ToggleContextPage(ContextPage::About),
-            ),
-        })
+impl AppModel {
+    pub fn title(&self) -> String {
+        format!("Dream Collections by Nemessis - {}", REPOSITORY)
     }
 
-    /// Describes the interface based on the current state of the application model.
-    ///
-    /// Application events will be processed through the view. Any messages emitted by
-    /// events received by widgets will be passed to the update method.
-    fn view(&self) -> Element<'_, Self::Message> {
-        let content: Element<_> = match self.nav.active_data::<Page>().unwrap() {
-            Page::DarkWizard => {
-                let set_items = self
-                    .collections
-                    .collection
-                    .iter()
-                    .find_map(|class_set| {
-                        if let ClassSets::DarkWizard(sets) = class_set {
-                            Some(sets)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap();
-
-                self.view_collections("Dark Wizard", set_items)
-            }
-
-            Page::DarkKnight => {
-                let set_items = self
-                    .collections
-                    .collection
-                    .iter()
-                    .find_map(|class_set| {
-                        if let ClassSets::DarkKnight(sets) = class_set {
-                            Some(sets)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap();
-
-                self.view_collections("Dark Knight", set_items)
-            }
-
-            Page::Elf => {
-                let set_items = self
-                    .collections
-                    .collection
-                    .iter()
-                    .find_map(|class_set| {
-                        if let ClassSets::Elf(sets) = class_set {
-                            Some(sets)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap();
-
-                self.view_collections("Elf", set_items)
-            }
-
-            Page::Summoner => {
-                let set_items = self
-                    .collections
-                    .collection
-                    .iter()
-                    .find_map(|class_set| {
-                        if let ClassSets::Summoner(sets) = class_set {
-                            Some(sets)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap();
-
-                self.view_collections("Summoner", set_items)
-            }
-            Page::MagicGladiator => {
-                let set_items = self
-                    .collections
-                    .collection
-                    .iter()
-                    .find_map(|class_set| {
-                        if let ClassSets::MagicGladiator(sets) = class_set {
-                            Some(sets)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap();
-
-                self.view_collections("Magic Gladiator", set_items)
-            }
-            Page::DarkLord => {
-                let set_items = self
-                    .collections
-                    .collection
-                    .iter()
-                    .find_map(|class_set| {
-                        if let ClassSets::DarkLord(sets) = class_set {
-                            Some(sets)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap();
-
-                self.view_collections("Dark Lord", set_items)
-            }
-            Page::RageFighter => {
-                let set_items = self
-                    .collections
-                    .collection
-                    .iter()
-                    .find_map(|class_set| {
-                        if let ClassSets::RageFighter(sets) = class_set {
-                            Some(sets)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap();
-
-                self.view_collections("Rage Fighter", set_items)
-            }
-        };
-
-        widget::container(content)
+    pub fn view(&self) -> Element<'_, Message> {
+        widget::container(widget::scrollable(self.view_collections()))
             .width(600)
-            .apply(widget::container)
             .height(Length::Fill)
             .width(Length::Fill)
             .align_x(Horizontal::Center)
             .into()
     }
 
-    /// Register subscriptions for this application.
-    ///
-    /// Subscriptions are long-running async tasks running in the background which
-    /// emit messages to the application through a channel. They can be dynamically
-    /// stopped and started conditionally based on application state, or persist
-    /// indefinitely.
-    fn subscription(&self) -> Subscription<Self::Message> {
-        // Add subscriptions which are always active.
-        let subscriptions = vec![
-            // Watch for application configuration changes.
-            self.core()
-                .watch_config::<Config>(Self::APP_ID)
-                .map(|update| {
-                    // for why in update.errors {
-                    //     tracing::error!(?why, "app config error");
-                    // }
-
-                    Message::UpdateConfig(update.config)
-                }),
-        ];
-
-        // Conditionally enables a timer that emits a message every second.
-        Subscription::batch(subscriptions)
-    }
-
     /// Handles messages emitted by the application and its widgets.
     ///
     /// Tasks may be returned for asynchronous execution of code in the background
     /// on the application's async runtime.
-    fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
+    pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ToggleContextPage(context_page) => {
-                if self.context_page == context_page {
-                    // Close the context drawer if the toggled context page is the same.
-                    self.core.window.show_context = !self.core.window.show_context;
-                } else {
-                    // Open the context drawer to display the requested context page.
-                    self.context_page = context_page;
-                    self.core.window.show_context = true;
-                }
+            Message::ChangePage(page) => {
+                self.set_options.clear();
+
+                self.page = page;
+                self.current_class = self
+                    .collections
+                    .collection
+                    .iter()
+                    .find(|c| {
+                        matches!(
+                            (self.page, &*c.lock().unwrap()),
+                            (Page::DarkWizard, ClassSets::DarkWizard(_))
+                                | (Page::DarkKnight, ClassSets::DarkKnight(_))
+                                | (Page::Elf, ClassSets::Elf(_))
+                                | (Page::Summoner, ClassSets::Summoner(_))
+                                | (Page::MagicGladiator, ClassSets::MagicGladiator(_))
+                                | (Page::DarkLord, ClassSets::DarkLord(_))
+                                | (Page::RageFighter, ClassSets::RageFighter(_))
+                        )
+                    })
+                    .cloned()
+                    .unwrap();
+
+                self.set_options = match &*self.current_class.lock().unwrap() {
+                    ClassSets::DarkWizard(sets) => sets.clone(),
+                    ClassSets::DarkKnight(sets) => sets.clone(),
+                    ClassSets::Elf(sets) => sets.clone(),
+                    ClassSets::Summoner(sets) => sets.clone(),
+                    ClassSets::MagicGladiator(sets) => sets.clone(),
+                    ClassSets::DarkLord(sets) => sets.clone(),
+                    ClassSets::RageFighter(sets) => sets.clone(),
+                };
             }
-
-            Message::UpdateConfig(config) => {
-                self.config = config;
-            }
-
-            Message::LaunchUrl(url) => match open::that_detached(&url) {
-                Ok(()) => {}
-                Err(err) => {
-                    eprintln!("failed to open {url:?}: {err}");
-                }
-            },
-
-            Message::UpdateCurrentSet(index) => {
-                self.current_set_index = index;
+            Message::ChangeSet(set) => {
+                self.set_selected = Some(set);
+                self.current_set = self
+                    .set_options
+                    .iter()
+                    .find(|s| s.set_string == self.set_selected.clone().unwrap())
+                    .cloned();
             }
             Message::UpdateItem(item, option, enabled) => {
                 self.collections.update_class_item(item, option, enabled);
@@ -511,9 +276,13 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::ClearOffers => {
+                self.offers.0 = String::new();
                 self.offers.1.clear();
             }
             Message::SearchMarket(item) => {
+                self.offers.0 = String::new();
+                self.offers.1.clear();
+
                 let item_guard = item.lock().unwrap();
                 let query = item_guard.generate_market_query();
                 let vars = item_guard.generate_gql_vars();
@@ -524,7 +293,7 @@ impl cosmic::Application for AppModel {
                     item_guard.item_type.clone().unwrap_or_default()
                 );
 
-                return Task::future(async move {
+                return iced::Task::future(async move {
                     let client = Client::new(ENDPOINT);
 
                     let result = client
@@ -532,10 +301,7 @@ impl cosmic::Application for AppModel {
                         .await
                         .unwrap();
 
-                    cosmic::Action::App(Message::MarketSearchResult((
-                        item_title,
-                        result.expect("No data"),
-                    )))
+                    Message::MarketSearchResult((item_title, result))
                 });
             }
 
@@ -543,177 +309,124 @@ impl cosmic::Application for AppModel {
                 // Handle market search results here
                 println!("Received market search results");
 
-                for lot in data.lots.lots {
-                    self.offers.0 = item.clone();
-                    self.offers.1.push(lot);
+                if let Some(data) = data {
+                    for lot in data.lots.lots {
+                        self.offers.0 = item.clone();
+                        self.offers.1.push(lot);
+                    }
                 }
             }
         }
+
         Task::none()
     }
 
-    /// Called when a nav item is selected.
-    fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<cosmic::Action<Self::Message>> {
-        // Activate the page in the model.
-
-        self.offers.1.clear();
-
-        self.nav.activate(id);
-
-        self.update_title()
-    }
-}
-
-impl AppModel {
-    /// Updates the header and window titles.
-    pub fn update_title(&mut self) -> Task<cosmic::Action<Message>> {
-        let mut window_title = fl!("app-title");
-
-        if let Some(page) = self.nav.text(self.nav.active()) {
-            window_title.push_str(" — ");
-            window_title.push_str(page);
-        }
-
-        if let Some(id) = self.core.main_window_id() {
-            self.set_window_title(window_title, id)
-        } else {
-            Task::none()
-        }
-    }
-
-    pub fn view_collections(&self, title: &str, sets: &[SetItems]) -> Element<'_, Message> {
-        let space_s = cosmic::theme::spacing().space_s;
-
-        let header = widget::row::with_capacity(2)
-            .push(widget::text::title1(title.to_string()))
-            .push(
-                widget::button::standard("Zapisz kolekcje do bazy")
-                    .on_press(Message::SaveCollections),
+    pub fn view_collections(&self) -> Container<'_, Message> {
+        let spacer = horizontal_space().width(Length::Fill);
+        let buttons = row(vec![
+            widget::pick_list(&Page::ALL[..], Some(self.page), Message::ChangePage)
+                .placeholder("Wybierz klasę")
+                .into(),
+            widget::pick_list(
+                self.set_options
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<String>>(),
+                self.set_selected.clone(),
+                Message::ChangeSet,
             )
-            .push(widget::button::standard("Wyczyść oferty").on_press(Message::ClearOffers))
-            .align_y(Alignment::End)
-            .spacing(space_s);
+            .placeholder("Wybierz set")
+            .into(),
+            spacer.into(),
+            widget::button("Wyczyść oferty")
+                .on_press(Message::ClearOffers)
+                .into(),
+            widget::button("Zapisz kolekcje")
+                .on_press(Message::SaveCollections)
+                .into(),
+        ]);
 
-        let dropdown_sets = sets
-            .iter()
-            .map(|set| set.to_string())
-            .collect::<Vec<String>>();
+        let mut content = widget::column!().push(buttons).push(self.view_offers());
+        let mut cols = widget::column!();
 
-        let set_selector = cosmic::widget::settings::section().add(
-            cosmic::widget::settings::item::builder("Set").control(widget::dropdown::dropdown(
-                dropdown_sets,
-                Some(self.current_set_index),
-                Message::UpdateCurrentSet,
-            )),
-        );
+        if let Some(set) = self.current_set.as_ref() {
+            content = content.push(widget::text(format!("Wybrany set: {}", set)));
 
-        let set_parts = cosmic::widget::scrollable({
-            let mut col = cosmic::widget::column().spacing(space_s);
+            for item in set.items.iter() {
+                let item_guard = item.lock().unwrap();
 
-            let items = sets[self.current_set_index].items.clone();
+                let item_name = format!(
+                    "{} {}",
+                    item_guard.name.clone().unwrap_or_default(),
+                    item_guard.item_type.clone().unwrap_or_default()
+                );
 
-            for item in items {
-                let title = item.lock().unwrap().clone().item_type.unwrap().to_string();
+                cols = cols.push(horizontal_rule(Pixels::from(1))).push(
+                    widget::button(widget::text!("Szukaj: {}", item_name))
+                        .on_press(Message::SearchMarket(item.clone())),
+                );
 
-                col = col.push(cosmic::widget::container({
-                    let mut section = cosmic::widget::settings::section().title(title);
+                cols = cols.push(widget::text(item_name));
 
-                    let options = item.lock().unwrap().clone();
+                let options = item_guard.options.lock().unwrap();
+                for (option, has_option) in options.0.clone() {
+                    cols = cols.push(
+                        widget::checkbox(option.to_string(), has_option)
+                            .on_toggle(move |enabled| {
+                                let item_clone = item.clone();
 
-                    for (option, enabled) in options.options.lock().unwrap().0.clone() {
-                        let value = item.clone();
-                        section = section.add(
-                            cosmic::widget::settings::item::builder(option.to_string()).control(
-                                widget::toggler(enabled).on_toggle(move |enabled| {
-                                    Message::UpdateItem(value.clone(), option.clone(), enabled)
-                                }),
-                            ),
-                        );
-                    }
-
-                    section = section.add(
-                        cosmic::widget::settings::item::builder("Przeszukaj market").control(
-                            widget::button::standard("Start")
-                                .on_press(Message::SearchMarket(item.clone())),
-                        ),
+                                Message::UpdateItem(item_clone.clone(), option.clone(), enabled)
+                            })
+                            .spacing(10),
                     );
-
-                    section
-                }))
+                }
             }
+        }
 
-            widget::container(col)
-                .padding(10.0)
-                .align_x(Horizontal::Center)
-                .align_y(Vertical::Center)
-        })
-        .spacing(space_s);
+        content = content.push(cols);
 
-        widget::column()
-            .push(header)
-            .push(self.view_offers())
-            .push_maybe(if self.offers.1.is_empty() {
-                set_selector.into()
-            } else {
-                None
-            })
-            .push_maybe(if self.offers.1.is_empty() {
-                set_parts.into()
-            } else {
-                None
-            })
-            .spacing(space_s)
-            .into()
+        widget::container(content)
     }
 
-    pub fn view_offers(&self) -> Element<'_, Message> {
-        let space_s = cosmic::theme::spacing().space_s;
-
-        let list = cosmic::widget::scrollable({
-            let mut col = cosmic::widget::column().spacing(space_s);
+    pub fn view_offers(&self) -> Container<'_, Message> {
+        let list = widget::scrollable({
+            let mut col = widget::column!();
 
             for item in self.offers.1.iter() {
-                let title = item.gear_score.unwrap_or_default().to_string();
+                col = col.push(widget::container({
+                    let mut row = widget::row!();
+                    row = row.push(widget::text(format!(
+                        "ID: {} Gear Score: {}",
+                        item.id.clone().unwrap_or_default(),
+                        item.gear_score.unwrap_or_default()
+                    )));
 
-                col = col.push(cosmic::widget::container(
-                    cosmic::widget::settings::section()
-                        .title(format!("Gear score: {} ", title))
-                        .add(widget::settings::item_row({
-                            let mut row = vec![];
+                    for price in item.prices.iter() {
+                        let currency = &price.currency;
+                        let value = price.value.unwrap_or_default();
 
-                            for price in item.prices.iter() {
-                                let currency = &price.currency;
-                                let value = price.value.unwrap_or_default();
+                        let currency_title = currency.title.as_deref().unwrap_or("Unknown");
 
-                                let currency_title = currency.title.as_deref().unwrap_or("Unknown");
-
-                                row.push(
-                                    widget::text::body(format!("{}: {:.2}", currency_title, value))
-                                        .into(),
-                                );
-                            }
-
-                            row
-                        })),
-                ))
+                        row = row.push(widget::text(format!("{}: {:.2}", currency_title, value)));
+                    }
+                    row
+                }));
             }
 
             widget::container(col)
                 .padding(10.0)
                 .align_x(Horizontal::Center)
-        })
-        .spacing(space_s);
+        });
 
-        widget::column::with_capacity(2)
-            .push(if self.offers.1.is_empty() {
-                cosmic::widget::settings::section().title("Brak ofert. Szukaj dalej.")
-            } else {
-                cosmic::widget::settings::section()
-                    .title(format!("Oferty z marketu dla: {}", self.offers.0))
-            })
-            .push(list)
-            .spacing(space_s)
-            .into()
+        let mut col = widget::column!();
+        col = col.push(if self.offers.1.is_empty() {
+            widget::text("Brak ofert z marketu")
+        } else {
+            widget::text(format!("Oferty dla przedmiotu: {}", self.offers.0.clone()))
+        });
+        col = col.push(list);
+
+        widget::container(col)
     }
 }
 
@@ -745,24 +458,14 @@ impl Display for Page {
     }
 }
 
-/// The context page to display in the context drawer.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub enum ContextPage {
-    #[default]
-    About,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MenuAction {
-    About,
-}
-
-impl menu::action::MenuAction for MenuAction {
-    type Message = Message;
-
-    fn message(&self) -> Self::Message {
-        match self {
-            MenuAction::About => Message::ToggleContextPage(ContextPage::About),
-        }
-    }
+impl Page {
+    pub const ALL: [Page; 7] = [
+        Page::DarkWizard,
+        Page::DarkKnight,
+        Page::Elf,
+        Page::Summoner,
+        Page::MagicGladiator,
+        Page::DarkLord,
+        Page::RageFighter,
+    ];
 }
