@@ -5,8 +5,8 @@ use crate::gql::{Data, Vars};
 use crate::items::{AllSets, ClassSets, Item, ItemHasOption, ItemOptionType, SetItems};
 use gql_client::Client;
 use iced::alignment::Horizontal;
-use iced::widget::{Container, horizontal_rule, horizontal_space, row};
-use iced::{Element, Length, Pixels, Task, widget};
+use iced::widget::{Container, container, horizontal_rule, row};
+use iced::{Alignment, Color, Element, Font, Length, Pixels, Task, widget};
 use ron::ser::{PrettyConfig, to_string_pretty};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug, Display, Formatter};
@@ -210,12 +210,7 @@ impl AppModel {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        widget::container(widget::scrollable(self.view_collections()))
-            .width(600)
-            .height(Length::Fill)
-            .width(Length::Fill)
-            .align_x(Horizontal::Center)
-            .into()
+        widget::container(self.view_collections()).into()
     }
 
     /// Handles messages emitted by the application and its widgets.
@@ -306,15 +301,12 @@ impl AppModel {
             }
 
             Message::MarketSearchResult((item, data)) => {
-                // Handle market search results here
-                println!("Received market search results");
-
                 if let Some(data) = data {
                     for lot in data.lots.lots {
-                        self.offers.0 = item.clone();
                         self.offers.1.push(lot);
                     }
                 }
+                self.offers.0 = format!("Znaleziono {} ofert dla {}", self.offers.1.len(), item);
             }
         }
 
@@ -322,8 +314,7 @@ impl AppModel {
     }
 
     pub fn view_collections(&self) -> Container<'_, Message> {
-        let spacer = horizontal_space().width(Length::Fill);
-        let buttons = row(vec![
+        let buttons = container(row(vec![
             widget::pick_list(&Page::ALL[..], Some(self.page), Message::ChangePage)
                 .placeholder("Wybierz klasę")
                 .into(),
@@ -337,23 +328,27 @@ impl AppModel {
             )
             .placeholder("Wybierz set")
             .into(),
-            spacer.into(),
             widget::button("Wyczyść oferty")
                 .on_press(Message::ClearOffers)
                 .into(),
             widget::button("Zapisz kolekcje")
                 .on_press(Message::SaveCollections)
                 .into(),
-        ]);
+        ]))
+        .padding(10)
+        .center_x(Length::Fill);
 
-        let mut content = widget::column!().push(buttons).push(self.view_offers());
-        let mut cols = widget::column!();
+        let mut content = widget::column!()
+            .push(buttons)
+            .push(horizontal_rule(Pixels::from(2)));
+
+        let mut item_parts = widget::column!().spacing(15);
 
         if let Some(set) = self.current_set.as_ref() {
-            content = content.push(widget::text(format!("Wybrany set: {}", set)));
-
             for item in set.items.iter() {
                 let item_guard = item.lock().unwrap();
+
+                let mut row = widget::row!().spacing(10).width(Length::Fill);
 
                 let item_name = format!(
                     "{} {}",
@@ -361,70 +356,103 @@ impl AppModel {
                     item_guard.item_type.clone().unwrap_or_default()
                 );
 
-                cols = cols.push(horizontal_rule(Pixels::from(1))).push(
-                    widget::button(widget::text!("Szukaj: {}", item_name))
-                        .on_press(Message::SearchMarket(item.clone())),
-                );
-
-                cols = cols.push(widget::text(item_name));
+                row = row.push(widget::container(
+                    widget::button(widget::text!("{}", item_name).align_x(Alignment::Center))
+                        .on_press(Message::SearchMarket(item.clone()))
+                        .height(Length::Fixed(200.0))
+                        .width(Length::Fixed(150.0)),
+                ));
 
                 let options = item_guard.options.lock().unwrap();
-                for (option, has_option) in options.0.clone() {
-                    cols = cols.push(
-                        widget::checkbox(option.to_string(), has_option)
-                            .on_toggle(move |enabled| {
-                                let item_clone = item.clone();
+                let mut col = widget::column!();
 
-                                Message::UpdateItem(item_clone.clone(), option.clone(), enabled)
-                            })
-                            .spacing(10),
+                for (option, has_option) in options.0.clone() {
+                    col = col.push(
+                        widget::container(
+                            widget::checkbox(option.to_string(), has_option)
+                                .on_toggle(move |enabled| {
+                                    let item_clone = item.clone();
+                                    Message::UpdateItem(item_clone, option.clone(), enabled)
+                                })
+                                .spacing(10),
+                        )
+                        .height(Length::Fixed(30.0)),
                     );
                 }
+                row = row.push(widget::container(col).center_y(Length::Fixed(200.0)));
+                item_parts = item_parts.push(row);
             }
         }
 
-        content = content.push(cols);
+        let offers_container = self.view_offers();
+
+        let row = widget::row!()
+            .spacing(20)
+            .push(
+                widget::scrollable(item_parts)
+                    .width(Length::FillPortion(3))
+                    .spacing(16),
+            )
+            .push(
+                widget::scrollable(offers_container)
+                    .width(Length::FillPortion(2))
+                    .spacing(16),
+            );
+
+        content = content.push(row);
 
         widget::container(content)
+            .padding(30)
+            .align_x(Horizontal::Center)
     }
 
     pub fn view_offers(&self) -> Container<'_, Message> {
-        let list = widget::scrollable({
-            let mut col = widget::column!();
-
-            for item in self.offers.1.iter() {
-                col = col.push(widget::container({
-                    let mut row = widget::row!();
-                    row = row.push(widget::text(format!(
-                        "ID: {} Gear Score: {}",
-                        item.id.clone().unwrap_or_default(),
-                        item.gear_score.unwrap_or_default()
-                    )));
-
-                    for price in item.prices.iter() {
-                        let currency = &price.currency;
-                        let value = price.value.unwrap_or_default();
-
-                        let currency_title = currency.title.as_deref().unwrap_or("Unknown");
-
-                        row = row.push(widget::text(format!("{}: {:.2}", currency_title, value)));
-                    }
-                    row
-                }));
-            }
-
-            widget::container(col)
-                .padding(10.0)
-                .align_x(Horizontal::Center)
-        });
-
         let mut col = widget::column!();
-        col = col.push(if self.offers.1.is_empty() {
-            widget::text("Brak ofert z marketu")
-        } else {
-            widget::text(format!("Oferty dla przedmiotu: {}", self.offers.0.clone()))
-        });
-        col = col.push(list);
+
+        col = col.push(widget::text(self.offers.0.clone()).size(24));
+
+        for item in self.offers.1.iter() {
+            col = col.push(widget::container({
+                let mut colu = widget::column!().spacing(8);
+
+                colu = colu.push(
+                    widget::row!()
+                        .spacing(10)
+                        .push(widget::text("Gear Score"))
+                        .push(
+                            widget::text(item.gear_score.unwrap_or_default())
+                                .font(Font::MONOSPACE)
+                                .color(Color::from_rgb(0.8, 0.2, 0.2)),
+                        ),
+                );
+
+                let mut row = widget::row!().spacing(10);
+
+                for price in item.prices.iter() {
+                    let currency = &price.currency;
+                    let value = price.value.unwrap_or_default();
+
+                    let currency_title = currency.title.as_deref().unwrap_or("Unknown");
+
+                    row = row.push(
+                        widget::column!()
+                            .push(
+                                widget::text(currency_title).color(Color::from_rgb(0.2, 0.6, 0.8)),
+                            )
+                            .push(
+                                widget::text(format!("{value}"))
+                                    .font(Font::MONOSPACE)
+                                    .size(20),
+                            ),
+                    );
+                }
+                colu = colu.push(row);
+
+                colu = colu.push(widget::horizontal_rule(Pixels::from(1)));
+
+                colu
+            }));
+        }
 
         widget::container(col)
     }
